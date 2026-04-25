@@ -9,6 +9,7 @@ import { FuelPlan } from "@/components/dashboard/FuelPlan";
 import { SplitTimes } from "@/components/dashboard/SplitTimes";
 import { ExtraMetrics } from "@/components/dashboard/ExtraMetrics";
 import { DataSources } from "@/components/dashboard/DataSources";
+import { LiveTrackInput } from "@/components/dashboard/LiveTrackInput";
 
 // recharts uses ResizeObserver/DOM measurements — skip SSR to avoid static-generation warnings
 const PaceChart = dynamic(
@@ -17,7 +18,7 @@ const PaceChart = dynamic(
 );
 
 export default function DashboardPage() {
-  const raceData = useRaceData(5000);
+  const { data: raceData, liveTrackStatus, liveTrackUrl, setLiveTrackUrl } = useRaceData(5000);
 
   return (
     <main className="min-h-screen bg-[#1a1a2e] p-4 lg:p-6">
@@ -35,6 +36,13 @@ export default function DashboardPage() {
             <div className="text-[#4ade80] font-medium animate-pulse">● přímý přenos</div>
           </div>
         </div>
+
+        {/* LiveTrack URL input */}
+        <LiveTrackInput
+          url={liveTrackUrl}
+          status={liveTrackStatus}
+          onSave={setLiveTrackUrl}
+        />
 
         {/* Status Bar */}
         <StatusBar data={raceData} />
