@@ -6,7 +6,6 @@ import { createBaseRaceData, applyVariation } from "@/lib/mockData";
 
 const STORAGE_KEY = "garmin_livetrack_url";
 
-// What the hook reports about the data source
 export type ConnectionStatus = "mock" | "connecting" | "live" | "error";
 
 interface UseRaceDataReturn {
@@ -14,6 +13,19 @@ interface UseRaceDataReturn {
   liveTrackUrl: string;
   setLiveTrackUrl: (url: string) => void;
   connectionStatus: ConnectionStatus;
+}
+
+// Parse the session ID out of a LiveTrack viewer URL, then build the
+// undocumented services endpoint that the LiveTrack SPA itself uses.
+//
+// Input:  https://livetrack.garmin.com/session/{id}/token/{token}
+// Output: https://livetrack.garmin.com/services/session/{id}/trackpoints
+function buildTrackpointsUrl(viewerUrl: string): string | null {
+  const match = viewerUrl.match(
+    /livetrack\.garmin\.com\/session\/([^/?#]+)/
+  );
+  if (!match) return null;
+  return `https://livetrack.garmin.com/services/session/${match[1]}/trackpoints`;
 }
 
 export function useRaceData(intervalMs = 5000): UseRaceDataReturn {
@@ -28,7 +40,6 @@ export function useRaceData(intervalMs = 5000): UseRaceDataReturn {
     if (saved) setLiveTrackUrlState(saved);
   }, []);
 
-  // Persist URL changes to localStorage
   const setLiveTrackUrl = useCallback((url: string) => {
     setLiveTrackUrlState(url);
     if (url) {
@@ -40,7 +51,6 @@ export function useRaceData(intervalMs = 5000): UseRaceDataReturn {
 
   useEffect(() => {
     if (!liveTrackUrl) {
-      // No URL set — run the mock simulation
       setConnectionStatus("mock");
       const id = setInterval(
         () => setData((prev) => applyVariation(prev)),
@@ -49,39 +59,56 @@ export function useRaceData(intervalMs = 5000): UseRaceDataReturn {
       return () => clearInterval(id);
     }
 
-    // LiveTrack URL present — poll the server-side proxy every intervalMs
+    const trackpointsUrl = buildTrackpointsUrl(liveTrackUrl);
+    if (!trackpointsUrl) {
+      console.error("[useRaceData] Could not parse session ID from URL:", liveTrackUrl);
+      setConnectionStatus("error");
+      return;
+    }
+
     setConnectionStatus("connecting");
 
     const poll = async () => {
       try {
-        const res = await fetch(
-          `/api/garmin?url=${encodeURIComponent(liveTrackUrl)}`
-        );
-        const json = await res.json();
+        // Fetch directly from the browser (real user IP, bypasses Garmin's
+        // datacenter-IP block). We pass no-cors as a fallback signal if needed,
+        // but try a normal fetch first so we can read the body.
+        const res = await fetch(trackpointsUrl, {
+          headers: {
+            Accept: "application/json, text/plain, */*",
+            Referer: liveTrackUrl,
+          },
+          cache: "no-store",
+        });
 
-        // Always log the raw response so we can see Garmin's data structure
-        console.log("[useRaceData] Garmin raw response:", json);
+        const text = await res.text();
+        console.log("[Garmin] HTTP", res.status, res.headers.get("content-type"));
+        console.log("[Garmin] Raw body:", text.slice(0, 2000));
 
-        if (json.error || !json.parsed) {
-          // Garmin unreachable or returned non-JSON — keep mock running
+        let parsed: unknown = null;
+        try { parsed = JSON.parse(text); } catch { /* not JSON */ }
+
+        if (!res.ok || parsed === null) {
           setConnectionStatus("error");
           setData((prev) => applyVariation(prev));
           return;
         }
 
+        console.log("[Garmin] Parsed:", parsed);
         setConnectionStatus("live");
 
-        // TODO: map json.parsed → RaceData once we know Garmin's schema.
-        // Until then, keep mock simulation running so the UI stays active.
+        // TODO: map parsed → RaceData once we understand the schema.
+        // Keep mock simulation running for display until then.
         setData((prev) => applyVariation(prev));
       } catch (err) {
-        console.error("[useRaceData] Poll error:", err);
+        // CORS block or network error
+        console.error("[Garmin] Fetch error:", err);
         setConnectionStatus("error");
         setData((prev) => applyVariation(prev));
       }
     };
 
-    poll(); // fire immediately, then on each interval
+    poll();
     const id = setInterval(poll, intervalMs);
     return () => clearInterval(id);
   }, [liveTrackUrl, intervalMs]);
